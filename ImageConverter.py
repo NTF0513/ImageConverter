@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import colorsys
@@ -18,7 +19,7 @@ import requests
 from PIL import Image, ImageTk, UnidentifiedImageError
 
 APP_NAME = "图片富文本转换器"
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.4.1"
 
 DISCLAIMER_TEXT = (
     "本工具仅限娱乐、学习、个人创作与已授权的服务器测试使用。\n\n"
@@ -316,6 +317,7 @@ class ImageConverterApp:
         self.last_output: str = ""
         self.last_stats: ConvertStats | None = None
         self.preview_photo = None
+        self.source_preview_title = tk.StringVar(value="请选择本地图片或 URL 图片")
 
         # 变量
         self.source_type = tk.StringVar(value="file")
@@ -366,7 +368,7 @@ class ImageConverterApp:
 
         title_area = ttk.Frame(header)
         title_area.grid(row=0, column=0, sticky="w")
-        ttk.Label(title_area, text="图片富文本转换器", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(title_area, text="图片富文本转换器V2.4.1", style="Title.TLabel").pack(side=tk.LEFT)
         ttk.Label(title_area, text="  适用于 EXILED TextToy / Hint / Broadcast 富文本", style="Sub.TLabel").pack(side=tk.LEFT, padx=8)
 
         disclaimer_area = ttk.Frame(header)
@@ -410,13 +412,13 @@ class ImageConverterApp:
 
         right = ttk.Frame(root_frame)
         right.grid(row=1, column=1, sticky="nsew")
-        right.rowconfigure(1, weight=1)
+        right.rowconfigure(0, weight=3)
+        right.rowconfigure(1, weight=2)
         right.columnconfigure(0, weight=1)
 
         self._build_source_frame(left)
         self._build_output_frame(left)
         self._build_option_frame(left)
-        self._build_preview_frame(left)
 
         self._build_result_frame(right)
         self._build_log_frame(right)
@@ -523,27 +525,41 @@ class ImageConverterApp:
         self.copy_btn.pack(side=tk.LEFT, padx=6)
         self.save_btn = ttk.Button(btns, text="保存当前结果", command=self._save_current_result, state=tk.DISABLED)
         self.save_btn.pack(side=tk.LEFT)
+        self.view_btn = ttk.Button(btns, text="查看源码", command=self._view_result_source, state=tk.DISABLED)
+        self.view_btn.pack(side=tk.LEFT, padx=6)
 
         self.progress = ttk.Progressbar(frame, mode="indeterminate")
         self.progress.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-    def _build_preview_frame(self, parent):
-        frame = ttk.LabelFrame(parent, text="图片预览", padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        self.preview_label = ttk.Label(frame, text="选择本地图片后会显示预览", anchor="center")
-        self.preview_label.pack(fill=tk.BOTH, expand=True)
-
     def _build_result_frame(self, parent):
-        frame = ttk.LabelFrame(parent, text="转换结果预览", padding=10)
+        frame = ttk.LabelFrame(parent, text="图片预览 / 转换结果", padding=10)
         frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         frame.rowconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        self.stats_label = ttk.Label(frame, text="暂无结果", style="Stats.TLabel")
-        self.stats_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        top = ttk.Frame(frame)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top.columnconfigure(0, weight=1)
 
-        self.result_text = ScrolledText(frame, height=15, wrap=tk.NONE, font=("Consolas", 9))
-        self.result_text.grid(row=1, column=0, sticky="nsew")
+        ttk.Label(top, textvariable=self.source_preview_title, style="Sub.TLabel").grid(row=0, column=0, sticky="w")
+        self.view_source_btn = ttk.Button(top, text="查看富文本源码", command=self._show_output_source, state=tk.DISABLED)
+        self.view_source_btn.grid(row=0, column=1, sticky="e")
+
+        preview_box = ttk.Frame(frame, relief=tk.SOLID, borderwidth=1)
+        preview_box.grid(row=1, column=0, sticky="nsew")
+        preview_box.rowconfigure(0, weight=1)
+        preview_box.columnconfigure(0, weight=1)
+
+        self.preview_label = ttk.Label(
+            preview_box,
+            text="选择图片后，这里会显示图片预览。\n转换后的完整富文本请使用“复制结果 / 保存当前结果 / 查看富文本源码”。",
+            anchor="center",
+            justify="center",
+        )
+        self.preview_label.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        self.stats_label = ttk.Label(frame, text="暂无结果", style="Stats.TLabel", wraplength=620)
+        self.stats_label.grid(row=2, column=0, sticky="ew", pady=(8, 0))
 
     def _build_log_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="日志", padding=10)
@@ -594,11 +610,23 @@ class ImageConverterApp:
     def _show_preview(self, path: str):
         try:
             image = Image.open(path)
-            image.thumbnail((260, 220), Image.Resampling.LANCZOS)
-            self.preview_photo = ImageTk.PhotoImage(image)
-            self.preview_label.configure(image=self.preview_photo, text="")
+            image.load()
+            self._set_preview_image(image, f"当前预览：{Path(path).name}")
         except Exception as exc:
             self.preview_label.configure(image="", text=f"预览失败：{exc}")
+            self.source_preview_title.set("图片预览失败")
+
+    def _set_preview_image(self, image: Image.Image, title: str | None = None):
+        try:
+            preview = image.copy()
+            preview.thumbnail((600, 420), Image.Resampling.LANCZOS)
+            self.preview_photo = ImageTk.PhotoImage(preview)
+            self.preview_label.configure(image=self.preview_photo, text="")
+            if title:
+                self.source_preview_title.set(title)
+        except Exception as exc:
+            self.preview_label.configure(image="", text=f"预览失败：{exc}")
+            self.source_preview_title.set("图片预览失败")
 
     def _read_options(self) -> ConvertOptions:
         block = self.block_char.get() or "█"
@@ -646,8 +674,10 @@ class ImageConverterApp:
         self.last_stats = None
         self.copy_btn.configure(state=tk.DISABLED)
         self.save_btn.configure(state=tk.DISABLED)
-        self.result_text.delete("1.0", tk.END)
-        self.stats_label.configure(text="正在转换...")
+        self.view_source_btn.configure(state=tk.DISABLED)
+        if hasattr(self, "view_btn"):
+            self.view_btn.configure(state=tk.DISABLED)
+        self.stats_label.configure(text="正在转换... 图片预览会保留，富文本源码请在完成后点击‘查看源码’。")
 
         self.worker = threading.Thread(
             target=self._worker_convert,
@@ -661,6 +691,7 @@ class ImageConverterApp:
             self.queue.put(("log", "正在加载图片..."))
             image = load_image_from_file(file_path) if source == "file" else load_image_from_url(url, options)
             self.queue.put(("log", f"图片加载成功：{image.width}x{image.height}，模式 {image.mode}"))
+            self.queue.put(("preview_image", image.copy(), "当前预览：已加载图片"))
 
             def progress(msg: str):
                 self.queue.put(("log", msg))
@@ -682,6 +713,9 @@ class ImageConverterApp:
                 kind = msg[0]
                 if kind == "log":
                     self._log(msg[1])
+                elif kind == "preview_image":
+                    _, image, title = msg
+                    self._set_preview_image(image, title)
                 elif kind == "done":
                     _, text, stats = msg
                     self._on_done(text, stats)
@@ -695,10 +729,7 @@ class ImageConverterApp:
         self._set_busy(False)
         self.last_output = text
         self.last_stats = stats
-
-        preview = text if len(text) <= 20000 else text[:20000] + "\n\n...【预览已截断，复制/保存仍为完整内容】"
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(tk.END, preview)
+        self.source_preview_title.set("转换完成：右侧为图片预览，富文本源码可复制/保存/查看")
 
         self.stats_label.configure(
             text=(
@@ -709,12 +740,17 @@ class ImageConverterApp:
         )
         self.copy_btn.configure(state=tk.NORMAL)
         self.save_btn.configure(state=tk.NORMAL)
-        self._log("转换完成。")
+        self.view_source_btn.configure(state=tk.NORMAL)
+        if hasattr(self, "view_btn"):
+            self.view_btn.configure(state=tk.NORMAL)
+        self._log("转换完成。富文本源码未直接铺在右侧预览区，可点击‘查看源码’查看。")
         messagebox.showinfo("转换完成", "图片已成功转换为富文本。")
 
     def _on_error(self, error: str):
         self._set_busy(False)
         self.stats_label.configure(text="转换失败")
+        if hasattr(self, "view_source_btn"):
+            self.view_source_btn.configure(state=tk.DISABLED)
         self._log(error, level="ERROR")
         messagebox.showerror("转换失败", error)
 
@@ -728,6 +764,60 @@ class ImageConverterApp:
             self.progress.start(10)
         else:
             self.progress.stop()
+
+    def _view_result_source(self):
+        if not self.last_output:
+            return
+        window = tk.Toplevel(self.root)
+        window.title("富文本源码预览")
+        window.geometry("900x520")
+        window.minsize(700, 420)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        info = "这里只用于检查源码。复制/保存按钮会处理完整结果。"
+        if len(self.last_output) > 50000:
+            info += " 当前预览较长，窗口内显示前 50000 字符。"
+        ttk.Label(window, text=info, style="Sub.TLabel").grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+
+        text_box = ScrolledText(window, wrap=tk.NONE, font=("Consolas", 9))
+        text_box.grid(row=1, column=0, sticky="nsew", padx=10, pady=6)
+        preview = self.last_output if len(self.last_output) <= 50000 else self.last_output[:50000] + "\n\n...【源码预览已截断，复制/保存仍为完整内容】"
+        text_box.insert(tk.END, preview)
+        text_box.configure(state=tk.DISABLED)
+
+        buttons = ttk.Frame(window)
+        buttons.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 10))
+        ttk.Button(buttons, text="复制完整结果", command=self._copy_result).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="关闭", command=window.destroy).pack(side=tk.LEFT, padx=8)
+
+    def _show_output_source(self):
+        if not self.last_output:
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("富文本源码预览")
+        window.geometry("900x520")
+        window.minsize(700, 420)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        info = ttk.Label(
+            window,
+            text="这里显示的是生成的完整富文本源码。普通用户通常只需要使用“复制结果”或“保存当前结果”。",
+            style="Sub.TLabel",
+            padding=(10, 8),
+        )
+        info.grid(row=0, column=0, sticky="ew")
+
+        text_box = ScrolledText(window, wrap=tk.NONE, font=("Consolas", 9))
+        text_box.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        text_box.insert(tk.END, self.last_output)
+
+        buttons = ttk.Frame(window, padding=(10, 0, 10, 10))
+        buttons.grid(row=2, column=0, sticky="ew")
+        ttk.Button(buttons, text="复制完整源码", command=self._copy_result).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="关闭", command=window.destroy).pack(side=tk.RIGHT)
 
     def _copy_result(self):
         if not self.last_output:
