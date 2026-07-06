@@ -19,7 +19,7 @@ import requests
 from PIL import Image, ImageTk, UnidentifiedImageError
 
 APP_NAME = "图片富文本转换器"
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.5.1"
 
 DISCLAIMER_TEXT = (
     "本工具仅限娱乐、学习、个人创作与已授权的服务器测试使用。\n\n"
@@ -48,7 +48,8 @@ class ConvertOptions:
     auto_fit_min_width: int = 8
     auto_fit_min_height: int = 8
     alpha_threshold: int = 0
-    transparent_as_space: bool = True
+    transparent_as_space: bool = False
+    line_height_override: int | None = None
     newline_mode: str = "literal"  # literal = 输出两个字符 \n；actual = 输出真实换行
     block_char: str = "█"
     transparent_char: str = " "
@@ -66,6 +67,7 @@ class ConvertStats:
     utf16_bytes: int
     elapsed_seconds: float
     resized_times: int
+    line_height: int
 
 
 class ConversionError(Exception):
@@ -188,7 +190,7 @@ def load_image_from_url(url: str, options: ConvertOptions) -> Image.Image:
         raise ConversionError(f"无法从 URL 加载图片：{exc}")
 
 
-def convert_once(image: Image.Image, options: ConvertOptions, progress=None) -> tuple[str, int, float]:
+def convert_once(image: Image.Image, options: ConvertOptions, progress=None) -> tuple[str, int, float, int]:
     width, height = image.size
     total_pixels = width * height
     if total_pixels > options.max_pixels:
@@ -198,7 +200,9 @@ def convert_once(image: Image.Image, options: ConvertOptions, progress=None) -> 
 
     scale = calculate_scale(width, height) if options.scale == 0 else int(options.scale)
     scale = max(1, min(100, scale))
-    line_height = max(1, 100 - scale)
+    auto_line_height = max(1, 100 - scale)
+    line_height = options.line_height_override if options.line_height_override is not None else auto_line_height
+    line_height = max(1, min(300, int(line_height)))
     prefix = f"<size={scale}%><line-height={line_height}%>"
     suffix = "</line-height></size>"
     newline = "\\n" if options.newline_mode == "literal" else "\n"
@@ -251,7 +255,7 @@ def convert_once(image: Image.Image, options: ConvertOptions, progress=None) -> 
         result = "".join(parts)
         byte_len = len(result.encode("utf-16-le"))
         if byte_len <= options.byte_limit:
-            return result, byte_len, threshold
+            return result, byte_len, threshold, line_height
 
         threshold += options.threshold_step
 
@@ -275,7 +279,7 @@ def convert_image_to_text(image: Image.Image, options: ConvertOptions, progress=
 
     while True:
         try:
-            text, byte_len, threshold = convert_once(working, options, progress)
+            text, byte_len, threshold, line_height = convert_once(working, options, progress)
             scale = calculate_scale(working.width, working.height) if options.scale == 0 else int(options.scale)
             stats = ConvertStats(
                 original_size=original_size,
@@ -286,6 +290,7 @@ def convert_image_to_text(image: Image.Image, options: ConvertOptions, progress=
                 utf16_bytes=byte_len,
                 elapsed_seconds=time.perf_counter() - start,
                 resized_times=resized_times,
+                line_height=line_height,
             )
             return text, stats
         except ConversionOverflow:
@@ -334,7 +339,9 @@ class ImageConverterApp:
         self.max_pixels = tk.IntVar(value=50000)
         self.byte_limit = tk.IntVar(value=32767)
         self.auto_fit = tk.BooleanVar(value=True)
-        self.transparent_as_space = tk.BooleanVar(value=True)
+        self.transparent_as_space = tk.BooleanVar(value=False)
+        self.use_custom_line_height = tk.BooleanVar(value=False)
+        self.custom_line_height = tk.IntVar(value=60)
         self.alpha_threshold = tk.IntVar(value=0)
         self.newline_mode = tk.StringVar(value="literal")
         self.block_char = tk.StringVar(value="█")
@@ -368,7 +375,7 @@ class ImageConverterApp:
 
         title_area = ttk.Frame(header)
         title_area.grid(row=0, column=0, sticky="w")
-        ttk.Label(title_area, text="图片富文本转换器V2.4.1", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(title_area, text="图片富文本转换器V2.5.1", style="Title.TLabel").pack(side=tk.LEFT)
         ttk.Label(title_area, text="  适用于 EXILED TextToy / Hint / Broadcast 富文本", style="Sub.TLabel").pack(side=tk.LEFT, padx=8)
 
         disclaimer_area = ttk.Frame(header)
@@ -480,33 +487,42 @@ class ImageConverterApp:
         self.scale_spin.grid(row=1, column=1, sticky="w", pady=3)
 
         ttk.Checkbutton(frame, text="启用颜色压缩", variable=self.compress).grid(row=2, column=0, columnspan=2, sticky="w", pady=3)
-        ttk.Checkbutton(frame, text="透明像素输出空格", variable=self.transparent_as_space).grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
-        ttk.Label(frame, text="Alpha 阈值：").grid(row=4, column=0, sticky="w", pady=3)
-        ttk.Spinbox(frame, from_=0, to=255, textvariable=self.alpha_threshold, width=8).grid(row=4, column=1, sticky="w", pady=3)
 
-        ttk.Separator(frame).grid(row=5, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Checkbutton(frame, text="手动限制 <line-height>", variable=self.use_custom_line_height, command=self._toggle_line_height).grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
+        ttk.Label(frame, text="line-height%：").grid(row=4, column=0, sticky="w", pady=3)
+        self.line_height_spin = ttk.Spinbox(frame, from_=1, to=300, textvariable=self.custom_line_height, width=8)
+        self.line_height_spin.grid(row=4, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="不勾选时自动使用 100 - size；光环偏高可试 45~75。", style="Sub.TLabel", wraplength=350).grid(row=5, column=0, columnspan=2, sticky="w")
 
-        ttk.Checkbutton(frame, text="转换前自动缩放图片", variable=self.resize_enabled).grid(row=6, column=0, columnspan=2, sticky="w")
-        ttk.Label(frame, text="最大宽度：").grid(row=7, column=0, sticky="w", pady=3)
-        ttk.Spinbox(frame, from_=1, to=512, textvariable=self.max_width, width=8).grid(row=7, column=1, sticky="w", pady=3)
-        ttk.Label(frame, text="最大高度：").grid(row=8, column=0, sticky="w", pady=3)
-        ttk.Spinbox(frame, from_=1, to=512, textvariable=self.max_height, width=8).grid(row=8, column=1, sticky="w", pady=3)
-        ttk.Label(frame, text="像素总数上限：").grid(row=9, column=0, sticky="w", pady=3)
-        ttk.Spinbox(frame, from_=1, to=500000, increment=1000, textvariable=self.max_pixels, width=10).grid(row=9, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(frame, text="透明像素输出空格", variable=self.transparent_as_space).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 3))
+        ttk.Label(frame, text="默认关闭：透明像素仍输出带透明 alpha 的字符块，更接近 C# 插件原逻辑。", style="Sub.TLabel", wraplength=350).grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Label(frame, text="Alpha 阈值：").grid(row=8, column=0, sticky="w", pady=3)
+        ttk.Spinbox(frame, from_=0, to=255, textvariable=self.alpha_threshold, width=8).grid(row=8, column=1, sticky="w", pady=3)
 
-        ttk.Separator(frame).grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Separator(frame).grid(row=9, column=0, columnspan=2, sticky="ew", pady=8)
 
-        ttk.Label(frame, text="UTF-16 字节上限：").grid(row=11, column=0, sticky="w", pady=3)
-        ttk.Spinbox(frame, from_=1000, to=200000, increment=1000, textvariable=self.byte_limit, width=10).grid(row=11, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(frame, text="超限时自动缩小重试", variable=self.auto_fit).grid(row=12, column=0, columnspan=2, sticky="w", pady=3)
+        ttk.Checkbutton(frame, text="转换前自动缩放图片", variable=self.resize_enabled).grid(row=10, column=0, columnspan=2, sticky="w")
+        ttk.Label(frame, text="最大宽度：").grid(row=11, column=0, sticky="w", pady=3)
+        ttk.Spinbox(frame, from_=1, to=512, textvariable=self.max_width, width=8).grid(row=11, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="最大高度：").grid(row=12, column=0, sticky="w", pady=3)
+        ttk.Spinbox(frame, from_=1, to=512, textvariable=self.max_height, width=8).grid(row=12, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="像素总数上限：").grid(row=13, column=0, sticky="w", pady=3)
+        ttk.Spinbox(frame, from_=1, to=500000, increment=1000, textvariable=self.max_pixels, width=10).grid(row=13, column=1, sticky="w", pady=3)
 
-        ttk.Label(frame, text="换行输出：").grid(row=13, column=0, sticky="w", pady=3)
-        ttk.Combobox(frame, textvariable=self.newline_mode, width=14, state="readonly", values=("literal", "actual")).grid(row=13, column=1, sticky="w", pady=3)
-        ttk.Label(frame, text="literal = 输出 \\n；actual = 真实换行", style="Sub.TLabel").grid(row=14, column=0, columnspan=2, sticky="w")
+        ttk.Separator(frame).grid(row=14, column=0, columnspan=2, sticky="ew", pady=8)
 
-        ttk.Label(frame, text="像素字符：").grid(row=15, column=0, sticky="w", pady=3)
-        ttk.Entry(frame, textvariable=self.block_char, width=8).grid(row=15, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="UTF-16 字节上限：").grid(row=15, column=0, sticky="w", pady=3)
+        ttk.Spinbox(frame, from_=1000, to=200000, increment=1000, textvariable=self.byte_limit, width=10).grid(row=15, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(frame, text="超限时自动缩小重试", variable=self.auto_fit).grid(row=16, column=0, columnspan=2, sticky="w", pady=3)
+
+        ttk.Label(frame, text="换行输出：").grid(row=17, column=0, sticky="w", pady=3)
+        ttk.Combobox(frame, textvariable=self.newline_mode, width=14, state="readonly", values=("literal", "actual")).grid(row=17, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="literal = 输出 \\n；actual = 真实换行", style="Sub.TLabel").grid(row=18, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(frame, text="像素字符：").grid(row=19, column=0, sticky="w", pady=3)
+        ttk.Entry(frame, textvariable=self.block_char, width=8).grid(row=19, column=1, sticky="w", pady=3)
         self._toggle_scale()
+        self._toggle_line_height()
 
     def _build_output_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="2. 输出与转换", padding=10)
@@ -525,8 +541,6 @@ class ImageConverterApp:
         self.copy_btn.pack(side=tk.LEFT, padx=6)
         self.save_btn = ttk.Button(btns, text="保存当前结果", command=self._save_current_result, state=tk.DISABLED)
         self.save_btn.pack(side=tk.LEFT)
-        self.view_btn = ttk.Button(btns, text="查看源码", command=self._view_result_source, state=tk.DISABLED)
-        self.view_btn.pack(side=tk.LEFT, padx=6)
 
         self.progress = ttk.Progressbar(frame, mode="indeterminate")
         self.progress.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -586,6 +600,10 @@ class ImageConverterApp:
     def _toggle_scale(self):
         self.scale_spin.configure(state=tk.DISABLED if self.auto_scale.get() else tk.NORMAL)
 
+    def _toggle_line_height(self):
+        if hasattr(self, "line_height_spin"):
+            self.line_height_spin.configure(state=tk.NORMAL if self.use_custom_line_height.get() else tk.DISABLED)
+
     def _browse_file(self):
         path = filedialog.askopenfilename(
             title="选择图片文件",
@@ -642,6 +660,7 @@ class ImageConverterApp:
             auto_fit_byte_limit=bool(self.auto_fit.get()),
             alpha_threshold=int(self.alpha_threshold.get()),
             transparent_as_space=bool(self.transparent_as_space.get()),
+            line_height_override=int(self.custom_line_height.get()) if self.use_custom_line_height.get() else None,
             newline_mode=self.newline_mode.get(),
             block_char=block,
         )
@@ -675,8 +694,6 @@ class ImageConverterApp:
         self.copy_btn.configure(state=tk.DISABLED)
         self.save_btn.configure(state=tk.DISABLED)
         self.view_source_btn.configure(state=tk.DISABLED)
-        if hasattr(self, "view_btn"):
-            self.view_btn.configure(state=tk.DISABLED)
         self.stats_label.configure(text="正在转换... 图片预览会保留，富文本源码请在完成后点击‘查看源码’。")
 
         self.worker = threading.Thread(
@@ -734,15 +751,13 @@ class ImageConverterApp:
         self.stats_label.configure(
             text=(
                 f"原图 {stats.original_size[0]}x{stats.original_size[1]} → 输出 {stats.final_size[0]}x{stats.final_size[1]} | "
-                f"size={stats.scale}% | 阈值={stats.threshold:.1f} | 字符={stats.chars} | UTF-16={stats.utf16_bytes} bytes | "
+                f"size={stats.scale}% | line-height={stats.line_height}% | 阈值={stats.threshold:.1f} | 字符={stats.chars} | UTF-16={stats.utf16_bytes} bytes | "
                 f"耗时={stats.elapsed_seconds:.2f}s | 缩放次数={stats.resized_times}"
             )
         )
         self.copy_btn.configure(state=tk.NORMAL)
         self.save_btn.configure(state=tk.NORMAL)
         self.view_source_btn.configure(state=tk.NORMAL)
-        if hasattr(self, "view_btn"):
-            self.view_btn.configure(state=tk.NORMAL)
         self._log("转换完成。富文本源码未直接铺在右侧预览区，可点击‘查看源码’查看。")
         messagebox.showinfo("转换完成", "图片已成功转换为富文本。")
 
@@ -764,32 +779,6 @@ class ImageConverterApp:
             self.progress.start(10)
         else:
             self.progress.stop()
-
-    def _view_result_source(self):
-        if not self.last_output:
-            return
-        window = tk.Toplevel(self.root)
-        window.title("富文本源码预览")
-        window.geometry("900x520")
-        window.minsize(700, 420)
-        window.columnconfigure(0, weight=1)
-        window.rowconfigure(1, weight=1)
-
-        info = "这里只用于检查源码。复制/保存按钮会处理完整结果。"
-        if len(self.last_output) > 50000:
-            info += " 当前预览较长，窗口内显示前 50000 字符。"
-        ttk.Label(window, text=info, style="Sub.TLabel").grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
-
-        text_box = ScrolledText(window, wrap=tk.NONE, font=("Consolas", 9))
-        text_box.grid(row=1, column=0, sticky="nsew", padx=10, pady=6)
-        preview = self.last_output if len(self.last_output) <= 50000 else self.last_output[:50000] + "\n\n...【源码预览已截断，复制/保存仍为完整内容】"
-        text_box.insert(tk.END, preview)
-        text_box.configure(state=tk.DISABLED)
-
-        buttons = ttk.Frame(window)
-        buttons.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 10))
-        ttk.Button(buttons, text="复制完整结果", command=self._copy_result).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="关闭", command=window.destroy).pack(side=tk.LEFT, padx=8)
 
     def _show_output_source(self):
         if not self.last_output:
